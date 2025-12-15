@@ -3,14 +3,15 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="BIST Analiz Sistemi", layout="wide")
+st.set_page_config(page_title="BIST Analiz", layout="wide")
 
 st.title("📊 BIST Bilgi Amaçlı Analiz Sistemi")
-st.caption("Bu sistem yatırım tavsiyesi vermez. Ben olsam ne yapardım mantığıyla bilgi sunar.")
+st.markdown("""
+Bu sistem **yatırım tavsiyesi vermez**.  
+📌 *“Ben olsam neye bakardım?”* mantığıyla bilgi sunar.
+""")
 
-# -------------------------
-# HİSSE GİRİŞİ
-# -------------------------
+# ---------------- INPUT ----------------
 hisse = st.text_input("Hisse Kodu (Örn: THYAO.IS)", "THYAO.IS")
 
 if hisse:
@@ -20,9 +21,11 @@ if hisse:
         st.error("Veri çekilemedi.")
         st.stop()
 
-    # -------------------------
-    # İNDİKATÖRLER
-    # -------------------------
+    # ---- SÜTUNLARI DÜZLEŞTİR ----
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    # ---- İNDİKATÖRLER ----
     data["EMA20"] = data["Close"].ewm(span=20).mean()
     data["EMA50"] = data["Close"].ewm(span=50).mean()
 
@@ -36,109 +39,52 @@ if hisse:
 
     son = data.iloc[-1]
 
-    # -------------------------
-    # GRAFİK
-    # -------------------------
-    st.subheader("📈 Fiyat ve Ortalamalar")
-    st.line_chart(data[["Close", "EMA20", "EMA50"]])
+    # ---------------- GRAFİKLER ----------------
+    st.subheader("📈 Fiyat")
+    st.line_chart(data["Close"])
+
+    st.subheader("📊 Hareketli Ortalamalar")
+    st.line_chart(data[["EMA20", "EMA50"]])
 
     st.subheader("📉 RSI")
     st.line_chart(data["RSI"])
 
-    st.subheader("📊 Hacim")
-    st.bar_chart(data[["Volume", "Hacim_Ort"]])
+    st.subheader("📦 Hacim")
+    st.line_chart(data["Volume"])
 
-    # -------------------------
-    # YORUM MOTORU
-    # -------------------------
+    # ---------------- YORUM ----------------
     st.subheader("🧠 Sistem Yorumu (Bilgi Amaçlı)")
 
     yorumlar = []
 
-    # RSI
+    # RSI Yorumu
     if son["RSI"] < 30:
-        yorumlar.append(
-            "RSI 30 altı. Piyasa aşırı satımda. "
-            "Ben olsam satış yapmaz, tepki gelir mi diye izlerdim."
-        )
+        yorumlar.append("RSI 30’un altında. Hisse sert düşmüş. **Ben olsam satış yapmaz, tepki arardım.**")
     elif son["RSI"] > 70:
-        yorumlar.append(
-            "RSI 70 üstü. Aşırı alım bölgesi. "
-            "Ben olsam yeni alım yapmaz, kârı korumayı düşünürdüm."
-        )
+        yorumlar.append("RSI 70’in üzerinde. Hisse çok yükselmiş. **Ben olsam yeni alımda temkinli olurdum.**")
     else:
-        yorumlar.append(
-            "RSI dengeli. Ne aşırı alım ne aşırı satım var."
-        )
+        yorumlar.append("RSI dengeli. Ne aşırı alım ne aşırı satım var.")
 
-    # Trend
-    if son["Close"] > son["EMA20"] > son["EMA50"]:
-        yorumlar.append(
-            "Fiyat kısa ve orta vadeli ortalamaların üzerinde. "
-            "Ben olsam trend yukarı diye düşünür, geri çekilmeleri kollardım."
-        )
-    elif son["Close"] < son["EMA20"] < son["EMA50"]:
-        yorumlar.append(
-            "Fiyat ortalamaların altında. Trend zayıf. "
-            "Ben olsam acele etmezdim."
-        )
+    # Trend Yorumu
+    if son["Close"] > son["EMA20"]:
+        yorumlar.append("Fiyat kısa vadeli ortalamanın üzerinde. **Kısa vadede olumlu.**")
     else:
-        yorumlar.append(
-            "Fiyat ortalamalar arasında. Kararsız bir yapı var."
-        )
+        yorumlar.append("Fiyat kısa vadeli ortalamanın altında. **Kısa vadede zayıf.**")
 
-    # Hacim
+    # Hacim Yorumu
     if son["Volume"] > son["Hacim_Ort"]:
-        yorumlar.append(
-            "Bugünkü hacim son 20 gün ortalamasının üzerinde. "
-            "Hareket ciddiye alınmalı."
-        )
+        yorumlar.append("Hacim ortalamanın üzerinde. **Hareket dikkat çekici.**")
     else:
-        yorumlar.append(
-            "Hacim düşük. Hareket çok ikna edici değil."
-        )
+        yorumlar.append("Hacim düşük. **Güçlü bir ilgi yok.**")
 
-    # -------------------------
-    # BEN OLSAM NE YAPARDIM?
-    # -------------------------
-    st.subheader("🧩 Ben Olsam Ne Yapardım?")
-
-    if son["RSI"] < 35 and son["Close"] > son["EMA20"]:
-        st.success(
-            "Ben olsam: Küçük miktarla ALIM düşünürdüm.\n\n"
-            "Sebep: Aşırı satımdan çıkış + fiyat kısa vadede toparlanıyor."
-        )
+    # BEN OLSAM NE YAPARDIM
+    st.markdown("### 🤔 Ben Olsam Ne Yapardım?")
+    if son["RSI"] < 35 and son["Close"] < son["EMA20"]:
+        st.info("Ben olsam **izlerdim**, acele almazdım. Tepki gelirse değerlendirirdim.")
     elif son["RSI"] > 65:
-        st.warning(
-            "Ben olsam: KÂR ALMAYI düşünürdüm.\n\n"
-            "Sebep: Aşırı alım bölgesi."
-        )
+        st.warning("Ben olsam **kârı korurdum**, yeni alım yapmazdım.")
     else:
-        st.info(
-            "Ben olsam: BEKLERDİM.\n\n"
-            "Sebep: Net bir avantaj yok."
-        )
+        st.success("Ben olsam **beklerdim**. Net sinyal yok.")
 
-    # -------------------------
-    # SATIŞ / HEDEF MANTIĞI
-    # -------------------------
-    st.subheader("🎯 Hedef & Risk Mantığı")
-
-    destek = data["Low"].rolling(20).min().iloc[-1]
-    direnç = data["High"].rolling(20).max().iloc[-1]
-
-    st.write(f"""
-    • Yakın Destek: **{destek:.2f}**
-    • Yakın Direnç: **{direnç:.2f}**
-
-    Ben olsam:
-    - Alım yaptıysam **destek altını zarar kes** kabul ederdim.
-    - Dirence yaklaştıkça **satışı düşünürdüm**.
-    """)
-
-    # -------------------------
-    # YORUMLARI YAZDIR
-    # -------------------------
-    st.subheader("📌 Detaylı Açıklamalar")
     for y in yorumlar:
         st.write("•", y)

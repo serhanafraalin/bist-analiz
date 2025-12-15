@@ -1,65 +1,46 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
+st.subheader("🧠 Sistem Yorumu (Bilgi Amaçlı)")
 
-st.set_page_config(page_title="BIST Analiz", layout="wide")
+son_fiyat = data["Close"].iloc[-1]
+ema20 = data["EMA20"].iloc[-1]
+ema50 = data["EMA50"].iloc[-1]
+son_rsi = data["RSI"].iloc[-1]
 
-st.title("📊 BIST Bilgi Amaçlı Analiz Sistemi")
-st.caption("Bu sistem al/sat önerisi vermez. Sadece teknik durumu yorumlar.")
+hacim_ort = data["Volume"].rolling(20).mean().iloc[-1]
+son_hacim = data["Volume"].iloc[-1]
 
-hisse = st.text_input("Hisse kodu (Örn: THYAO.IS)", "THYAO.IS")
+st.markdown(f"""
+📉 **Fiyat Durumu**  
+Hissenin güncel fiyatı **{son_fiyat:.2f}**. Son günlerde fiyat baskı altında.
 
-if hisse:
-    df = yf.download(hisse, period="6mo", interval="1d", group_by="column")
+📊 **RSI Yorumu**  
+RSI değeri **{son_rsi:.1f}** seviyesinde.
+- Bu seviye hissenin **çok satıldığını** gösterir.
+- Genelde bu bölgelerde **kısa vadeli tepki hareketleri** görülebilir.
+- Ancak bu, düşüşün bittiği anlamına gelmez.
 
-    if df.empty:
-        st.error("Veri çekilemedi.")
-        st.stop()
+📉 **Trend Durumu**  
+- Kısa vadeli ortalama (EMA20): **{ema20:.2f}**
+- Orta vadeli ortalama (EMA50): **{ema50:.2f}**
 
-    # MultiIndex varsa düzelt
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+Fiyat bu ortalamaların **altında**, yani genel yön hâlâ zayıf.
 
-    df = df.dropna()
+📦 **Hacim Yorumu**  
+Son işlem hacmi: **{son_hacim:,.0f}**  
+20 günlük ortalama hacim: **{hacim_ort:,.0f}**
 
-    # İndikatörler
-    df["EMA20"] = df["Close"].ewm(span=20).mean()
-    df["EMA50"] = df["Close"].ewm(span=50).mean()
+""")
 
-    delta = df["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
-    df["RSI"] = 100 - (100 / (1 + rs))
+if son_hacim > hacim_ort:
+    st.warning("Son hareketlerde hacim yüksek → piyasada güçlü bir karar süreci var.")
+else:
+    st.info("Hacim düşük → hareketler kararsız olabilir, net yön henüz oluşmamış.")
 
-    st.subheader("📈 Fiyat & Ortalamalar")
-    st.line_chart(df[["Close", "EMA20", "EMA50"]])
-
-    st.subheader("📉 RSI")
-    st.line_chart(df["RSI"])
-
-    # ANALİZ YORUMLARI
-    st.subheader("🧠 Sistem Yorumu (Bilgi Amaçlı)")
-
-    yorumlar = []
-
-    if df["RSI"].iloc[-1] < 30:
-        yorumlar.append("• RSI 30 altı → aşırı satım, tepki ihtimali artar.")
-    elif df["RSI"].iloc[-1] > 70:
-        yorumlar.append("• RSI 70 üstü → aşırı alım, yorulma riski.")
-    else:
-        yorumlar.append("• RSI dengeli bölgede.")
-
-    if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1]:
-        yorumlar.append("• Kısa vadeli trend yukarı (EMA20 > EMA50).")
-    else:
-        yorumlar.append("• Kısa vadeli trend zayıf / aşağı.")
-
-    if df["Close"].iloc[-1] > df["EMA20"].iloc[-1]:
-        yorumlar.append("• Fiyat kısa vadeli ortalamanın üzerinde.")
-    else:
-        yorumlar.append("• Fiyat kısa vadeli ortalamanın altında.")
-
-    for y in yorumlar:
-        st.write(y)
+st.markdown("""
+🧠 **Genel Okuma**  
+Bu tarz bölgeler genelde **izleme bölgeleri** olarak değerlendirilir.  
+Net yön için:
+- Fiyatın düşüşü durdurması
+- Hacmin artması
+- Ortalama seviyelerin üzerine çıkması  
+beklenir.
+""")

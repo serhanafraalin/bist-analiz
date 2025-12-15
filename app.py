@@ -1,38 +1,108 @@
 import math
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+# -----------------------------
+# Config
+# -----------------------------
 st.set_page_config(page_title="BIST 50 Tarayıcı", layout="wide")
 
-# ---------------------------
+st.title("📋 BIST 50 Tarayıcı — Kart Kart Liste")
+st.caption("Bu sistem yatırım tavsiyesi vermez. 'Ben olsam' bölümü, **örnek plan şablonu** olarak bilgi verir. Karar %100 sende.")
+
+# -----------------------------
+# BIST 50 (yaklaşık liste - zamanla değişebilir)
+# Not: İstersen bunu sen güncel tutarsın. Şimdilik BIST 50 ağırlıklı bir liste verdim.
+# -----------------------------
+BIST50 = [
+    "AKBNK.IS","ALARK.IS","ARCLK.IS","ASELS.IS","ASTOR.IS","BIMAS.IS","BRISA.IS","CCOLA.IS","DOAS.IS","EKGYO.IS",
+    "ENJSA.IS","ENKAI.IS","EREGL.IS","FROTO.IS","GARAN.IS","GUBRF.IS","HEKTS.IS","ISCTR.IS","KCHOL.IS","KOZAA.IS",
+    "KOZAL.IS","KRDMD.IS","MAVI.IS","ODAS.IS","OTKAR.IS","PETKM.IS","PGSUS.IS","SAHOL.IS","SASA.IS","SISE.IS",
+    "SKBNK.IS","SMRTG.IS","SOKM.IS","TCELL.IS","THYAO.IS","TKFEN.IS","TOASO.IS","TSKB.IS","TTKOM.IS","TUPRS.IS",
+    "TTRAK.IS","VAKBN.IS","VESBE.IS","VESTL.IS","YKBNK.IS","ZOREN.IS","HALKB.IS","KONTR.IS","ULKER.IS","CIMSA.IS"
+]
+
+# -----------------------------
 # Helpers
-# ---------------------------
-def _flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """yfinance bazen MultiIndex döndürür. Close/High/Low/Volume tek level'e indir."""
+# -----------------------------
+def safe_float(x):
+    try:
+        if x is None:
+            return np.nan
+        if isinstance(x, (float, int, np.floating, np.integer)):
+            return float(x)
+        return float(x)
+    except Exception:
+        return np.nan
+
+def fmt(x, n=2):
+    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+        return "-"
+    return f"{x:.{n}f}"
+
+def normalize_yf(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    yfinance bazen MultiIndex kolon döndürüyor.
+    Biz tek sütunlu standart OHLCV yapısına çeviriyoruz.
+    """
     if df is None or df.empty:
-        return df
+        return pd.DataFrame()
+
+    df = df.copy()
+
+    # Index adı yoksa (Date gibi)
+    df.index = pd.to_datetime(df.index)
+
+    # MultiIndex kolon ise (('Close','ASELS.IS') gibi)
     if isinstance(df.columns, pd.MultiIndex):
-        # En yaygın: level0 = OHLCV alanları
-        # Örn: ('Close','THYAO.IS') gibi
-        cols = []
-        for c in df.columns:
-            if isinstance(c, tuple) and len(c) >= 1:
-                cols.append(str(c[0]))
-            else:
-                cols.append(str(c))
-        df = df.copy()
-        df.columns = cols
+        # Bazı durumlarda ilk seviye OHLCV olur
+        # OHLCV'i seçip tek seviye haline getiriyoruz
+        lvl0 = df.columns.get_level_values(0).astype(str)
+        if set(["Open","High","Low","Close","Adj Close","Volume"]).intersection(set(lvl0)):
+            # Önce OHLCV tarafını al
+            cols = [c for c in ["Open","High","Low","Close","Adj Close","Volume"] if c in lvl0.values]
+            out = {}
+            for c in cols:
+                # Bu kolonun altındaki ilk ticker'ı al (tek hisse indirirken zaten 1 tane olur)
+                sub = df.loc[:, df.columns.get_level_values(0) == c]
+                # sub dataframe -> ilk sütunu seç
+                out[c] = sub.iloc[:, 0]
+            df = pd.DataFrame(out, index=df.index)
+        else:
+            # Fallback: ilk sütun setini al
+            df.columns = [str(c[0]) for c in df.columns]
+
+    # Bazı durumlarda 'Adj Close' gelmez; Close yeterli
+    if "Close" not in df.columns:
+        # yfinance bazen 'Adj Close' ağırlıklı döner
+        if "Adj Close" in df.columns:
+            df["Close"] = df["Adj Close"]
+        else:
+            return pd.DataFrame()
+
+    # Volume yoksa üretme
+    if "Volume" not in df.columns:
+        df["Volume"] = np.nan
+
+    # Gereksizleri at
+    keep = ["Open","High","Low","Close","Volume"]
+    for k in keep:
+        if k not in df.columns:
+            df[k] = np.nan
+    df = df[keep].dropna(subset=["Close"])
+
     return df
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     up = delta.clip(lower=0)
-    down = (-delta).clip(lower=0)
-    roll_up = up.rolling(period, min_periods=period).mean()
-    roll_down = down.rolling(period, min_periods=period).mean()
-    rs = roll_up / roll_down.replace(0, np.nan)
+    down = -delta.clip(upper=0)
+    ma_up = up.rolling(period, min_periods=period).mean()
+    ma_down = down.rolling(period, min_periods=period).mean()
+    rs = ma_up / ma_down
     out = 100 - (100 / (1 + rs))
     return out
 
@@ -41,300 +111,273 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     low = df["Low"]
     close = df["Close"]
     prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            (high - low).abs(),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
     return tr.rolling(period, min_periods=period).mean()
-
-def safe_float(x, default=np.nan):
-    try:
-        if pd.isna(x):
-            return default
-        return float(x)
-    except Exception:
-        return default
-
-def fmt_price(x: float) -> str:
-    if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
-        return "-"
-    if x >= 100:
-        return f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"{x:.3f}".replace(".", ",")
-
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-# ---------------------------
-# BIST 50 list (semboller)
-# Not: Yahoo Finance BIST için .IS gerekir.
-# Burayı ileride güncelleyebiliriz; ama çalışması için sabit liste yeter.
-# ---------------------------
-BIST50 = [
-    "AKBNK.IS","ALARK.IS","ARCLK.IS","ASELS.IS","ASTOR.IS","BIMAS.IS","BRSAN.IS","DOAS.IS",
-    "EKGYO.IS","ENKAI.IS","EREGL.IS","FROTO.IS","GARAN.IS","GUBRF.IS","HEKTS.IS","ISCTR.IS",
-    "KCHOL.IS","KOZAL.IS","KRDMD.IS","MAVI.IS","ODAS.IS","OTKAR.IS","PETKM.IS","PGSUS.IS",
-    "SAHOL.IS","SASA.IS","SISE.IS","SKBNK.IS","TAVHL.IS","TCELL.IS","THYAO.IS","TKFEN.IS",
-    "TOASO.IS","TTKOM.IS","TUPRS.IS","ULKER.IS","VAKBN.IS","VESBE.IS","YKBNK.IS",
-    # (BIST50 değişebilir; listeyi sonra güncelleriz. Sistemi bozmaz.)
-]
-
-# ---------------------------
-# Data download
-# ---------------------------
-@st.cache_data(ttl=60 * 60)  # 1 saat cache (sen açtıkça güncellenir, gün içinde de yenilenir)
-def load_ohlcv(ticker: str, period: str = "1y") -> pd.DataFrame:
-    df = yf.download(ticker, period=period, interval="1d", auto_adjust=False, progress=False, threads=False)
-    df = _flatten_yf_columns(df)
-    if df is None or df.empty:
-        return pd.DataFrame()
-    df = df.reset_index()
-    # yfinance bazen "Date" bazen "Datetime" döndürebilir
-    if "Date" not in df.columns:
-        if "Datetime" in df.columns:
-            df.rename(columns={"Datetime": "Date"}, inplace=True)
-    # Temizlik
-    keep = [c for c in ["Date","Open","High","Low","Close","Adj Close","Volume"] if c in df.columns]
-    df = df[keep].dropna(subset=["Close"])
-    return df
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # index
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"])
-        df = df.sort_values("Date").reset_index(drop=True)
-
-    # MA
     df["MA20"] = df["Close"].rolling(20, min_periods=20).mean()
     df["MA50"] = df["Close"].rolling(50, min_periods=50).mean()
-
-    # RSI, ATR
     df["RSI14"] = rsi(df["Close"], 14)
     df["ATR14"] = atr(df, 14)
+    df["VOL_MA20"] = df["Volume"].rolling(20, min_periods=20).mean()
+    df["VOL_RATIO"] = df["Volume"] / df["VOL_MA20"]
 
-    # Volume ratio
-    if "Volume" in df.columns:
-        df["VOL_MA20"] = df["Volume"].rolling(20, min_periods=20).mean()
-        df["VOL_RATIO"] = df["Volume"] / df["VOL_MA20"]
-    else:
-        df["VOL_RATIO"] = np.nan
-
-    # 120g drop from high
+    # 120 gün zirveden düşüş
     roll_high_120 = df["High"].rolling(120, min_periods=60).max()
     df["DROP_120"] = (roll_high_120 - df["Close"]) / roll_high_120 * 100
 
-    # 1y range position (0=alt,100=üst)
+    # 1 yıllık aralık konumu (0-100)
     roll_low_252 = df["Low"].rolling(252, min_periods=120).min()
     roll_high_252 = df["High"].rolling(252, min_periods=120).max()
-    span = (roll_high_252 - roll_low_252).replace(0, np.nan)
-    df["RANGE_POS_1Y"] = ((df["Close"] - roll_low_252) / span) * 100
+    rng = (roll_high_252 - roll_low_252)
+    df["RANGE_POS_1Y"] = np.where(rng > 0, (df["Close"] - roll_low_252) / rng * 100, np.nan)
+
+    # 60 günlük tepe (direnç adayı)
+    df["HIGH_60"] = df["High"].rolling(60, min_periods=30).max()
+
+    # Son 20 gün dip (stop referansı)
+    df["LOW_20"] = df["Low"].rolling(20, min_periods=10).min()
 
     return df
 
-def score_candidate(last: pd.Series) -> float:
-    """'Ben olsam alırdım' listesi için puanlama (tavsiye değil, filtre)."""
-    rsi14 = safe_float(last.get("RSI14"))
-    pos = safe_float(last.get("RANGE_POS_1Y"))
-    drop = safe_float(last.get("DROP_120"))
-    volr = safe_float(last.get("VOL_RATIO"))
-
-    # Daha düşük range_pos + orta/düşük RSI + anlamlı düşüş + hacim toparlıyorsa iyi puan
-    s = 0.0
-    if not math.isnan(pos):
-        s += (50 - pos) * 1.2  # alt bölgeye yakınsa artar
-    if not math.isnan(rsi14):
-        # 30-55 aralığı "soğuk/normal" bölge, aşırı sıcak değil
-        s += (55 - rsi14) * 0.8
-    if not math.isnan(drop):
-        s += clamp(drop, 0, 50) * 0.7
-    if not math.isnan(volr):
-        # Hacim 1x üstüyse hafif bonus
-        s += clamp((volr - 1.0) * 10, -10, 10)
-    return s
-
-def plan_levels(df: pd.DataFrame) -> dict:
-    """Ben olsam plan şablonu: stop + hedef1 + hedef2 (fiyat olarak)."""
+def classify_and_plan(df: pd.DataFrame) -> dict:
+    """
+    'Ben olsam alırdım' ve 'şu fiyata gelince satardım' benzeri
+    net seviyeler üretir.
+    """
     last = df.iloc[-1]
+
     close = safe_float(last["Close"])
-    ma50 = safe_float(last.get("MA50"))
-    atr14 = safe_float(last.get("ATR14"))
-    # son 20g swing low (koruma/stop mantığı)
-    swing_low = safe_float(df["Low"].tail(20).min())
-    # son 60g tepe (olası direnç/hedef)
-    high60 = safe_float(df["High"].tail(60).max())
+    ma20 = safe_float(last["MA20"])
+    ma50 = safe_float(last["MA50"])
+    rsi14 = safe_float(last["RSI14"])
+    drop120 = safe_float(last["DROP_120"])
+    vr = safe_float(last["VOL_RATIO"])
+    rp = safe_float(last["RANGE_POS_1Y"])
+    atr14 = safe_float(last["ATR14"])
+    hi60 = safe_float(last["HIGH_60"])
+    low20 = safe_float(last["LOW_20"])
 
-    # Stop: swing_low - 0.3*ATR (ATR yoksa %4 aşağı)
-    if not math.isnan(atr14):
-        stop = swing_low - 0.30 * atr14
-    else:
-        stop = close * 0.96
+    reasons = []
 
-    # Hedef1: MA50 (yukarıdaysa close'a yakın bir "kâr alma bölgesi" olmaz; o zaman MA20 kullanırız)
-    ma20 = safe_float(last.get("MA20"))
-    if not math.isnan(ma50) and ma50 > 0:
-        target1 = ma50
-    elif not math.isnan(ma20) and ma20 > 0:
-        target1 = ma20
-    else:
-        target1 = close * 1.05
+    # "Usta mantığı": ucuz bölge + risk kontrol + hacim
+    # Buy-candidate (ben olsam alırdım) kriterleri:
+    cond_range = (not math.isnan(rp)) and rp <= 35
+    cond_rsi = (not math.isnan(rsi14)) and (30 <= rsi14 <= 55)
+    cond_trend = (not math.isnan(ma20)) and close >= ma20 * 0.98  # MA20'ye yakın/üstü
+    cond_drop = (not math.isnan(drop120)) and drop120 >= 15
+    cond_vol = (not math.isnan(vr)) and vr >= 0.9  # hacim en az ortalamaya yakın
 
-    # Hedef2: 60g tepe (direnç adayı)
-    target2 = high60 if (not math.isnan(high60) and high60 > 0) else close * 1.10
+    ben_olsam_alirdim = bool((cond_range and cond_rsi and cond_trend) or (cond_drop and cond_rsi and cond_vol and cond_trend))
 
-    # "Ben olsam alırdım" dediğimizde bile AL demiyoruz; sadece olası senaryo:
-    return {
-        "ref": close,
-        "stop": stop,
-        "target1": target1,
-        "target2": target2,
-    }
+    # Sebep yazıları (sen anlaman için)
+    if not math.isnan(rp):
+        if rp <= 35:
+            reasons.append(f"Fiyat 1 yıllık aralığın alt bölgesinde ({fmt(rp,0)}/100) → daha 'ucuz' bölge.")
+        elif rp >= 75:
+            reasons.append(f"Fiyat 1 yıllık aralığın üst bölgesinde ({fmt(rp,0)}/100) → daha 'pahalı' bölge.")
+        else:
+            reasons.append(f"Fiyat 1 yıllık aralığın orta bölgesinde ({fmt(rp,0)}/100).")
 
-def write_card(ticker: str, name: str, df: pd.DataFrame):
-    last = df.iloc[-1]
-    close = safe_float(last["Close"])
-    drop120 = safe_float(last.get("DROP_120"))
-    rsi14 = safe_float(last.get("RSI14"))
-    volr = safe_float(last.get("VOL_RATIO"))
-    pos = safe_float(last.get("RANGE_POS_1Y"))
-    ma20 = safe_float(last.get("MA20"))
-    ma50 = safe_float(last.get("MA50"))
-
-    # Durum cümleleri (daha anlaşılır)
-    dur = []
-    if not math.isnan(pos):
-        dur.append(f"• 1 yıllık aralık konumu: **{int(round(pos))}/100** (0=ucuz bölge, 100=pahalı bölge)")
     if not math.isnan(rsi14):
         if rsi14 < 30:
-            dur.append(f"• RSI **{int(round(rsi14))}** → piyasa kısa vadede **aşırı satım** tarafına yakın.")
+            reasons.append(f"RSI {fmt(rsi14,0)} → aşırı satıma yakın (tepki ihtimali artar ama risk de var).")
         elif rsi14 > 70:
-            dur.append(f"• RSI **{int(round(rsi14))}** → piyasa kısa vadede **ısınmış** olabilir.")
+            reasons.append(f"RSI {fmt(rsi14,0)} → aşırı alıma yakın (kısa vadede ısınmış olabilir).")
         else:
-            dur.append(f"• RSI **{int(round(rsi14))}** → **normal/dengeli** bölge.")
-    if not math.isnan(ma50):
-        dur.append("• Fiyat **MA50** " + ("üzerinde (trend güçlü)" if close > ma50 else "altında (trend zayıf)"))
+            reasons.append(f"RSI {fmt(rsi14,0)} → dengeli bölgede.")
+
     if not math.isnan(ma20):
-        dur.append("• Fiyat **MA20** " + ("üzerinde (kısa vade pozitif)" if close > ma20 else "altında (kısa vade negatif)"))
-    if not math.isnan(volr):
-        if volr >= 1.2:
-            dur.append(f"• Hacim güçlü: **{volr:.2f}x** (20g ortalamanın üstü)")
-        elif volr <= 0.8:
-            dur.append(f"• Hacim zayıf: **{volr:.2f}x** (20g ortalamanın altı)")
+        if close >= ma20:
+            reasons.append("Fiyat MA20 üstünde/çevresinde → kısa vadede daha güçlü duruyor.")
         else:
-            dur.append(f"• Hacim normal: **{volr:.2f}x** (20g ortalamaya yakın)")
-    if not math.isnan(drop120):
-        dur.append(f"• 120g zirveye uzaklık: **-%{int(round(drop120))}**")
+            reasons.append("Fiyat MA20 altında → kısa vadede zayıf görünüm.")
 
-    levels = plan_levels(df)
+    if not math.isnan(ma50):
+        if close >= ma50:
+            reasons.append("Fiyat MA50 üstünde → orta vade trend daha güçlü.")
+        else:
+            reasons.append("Fiyat MA50 altında → orta vadede temkin gerekir.")
 
-    # Burada senin istediğin gibi: "Ben olsam ALIRDIM ve ŞU FİYATA GELİNCE SATARDIM" diyoruz.
-    # Bu tavsiye değildir; örnek plan şablonu.
-    plan = []
-    plan.append(f"• **Ben olsam (senaryo):** Bu karttaki şartlar içime sinerse **kademeli alım** düşünürdüm.")
-    plan.append(f"• **Korunma/Stop seviyesi:** **{fmt_price(levels['stop'])}** altına kalıcı düşerse planı bozarım.")
-    plan.append(f"• **Satış (Kâr alma) 1:** **{fmt_price(levels['target1'])}** civarında **bir kısmını** masaya bırakırım.")
-    plan.append(f"• **Satış (Kâr alma) 2:** **{fmt_price(levels['target2'])}** civarında **kalanı** azaltmayı düşünürüm.")
-    plan.append("• Not: Hacim artarak yükseliyorsa hareket daha sağlıklı; hacim düşerek yükseliyorsa daha temkinli olurum.")
+    if not math.isnan(vr):
+        if vr >= 1.2:
+            reasons.append(f"Hacim güçlü (20g ortalamaya göre {fmt(vr,2)}x) → hareket daha 'anlamlı' olabilir.")
+        elif vr <= 0.8:
+            reasons.append(f"Hacim zayıf ({fmt(vr,2)}x) → hareketler daha çabuk sönümlenebilir.")
+        else:
+            reasons.append(f"Hacim normal civarı ({fmt(vr,2)}x).")
 
-    # Kart UI
-    with st.container(border=True):
-        c1, c2, c3, c4 = st.columns([2,1,1,1])
-        c1.markdown(f"### {name} ({ticker.replace('.IS','')})")
-        c2.metric("Kapanış", fmt_price(close))
-        c3.metric("RSI(14)", "-" if math.isnan(rsi14) else str(int(round(rsi14))))
-        c4.metric("Hacim/20g", "-" if math.isnan(volr) else f"{volr:.2f}x")
+    # "Ben olsam" plan seviyeleri:
+    # Stop: son 20 gün dibi veya ATR tabanlı
+    # Take Profit 1: MA50 (fiyatın üstünde/altında durumuna göre)
+    # Take Profit 2: 60 gün tepe (direnç adayı)
+    # Eğer MA50 mantıksızsa (NaN), TP1 = close * 1.08 (örnek)
+    if math.isnan(atr14) or atr14 <= 0:
+        atr14 = max(0.0, close * 0.02)
 
-        st.markdown("**🧠 Sistem Durumu (Bilgi Amaçlı)**")
-        st.markdown("\n".join(dur) if dur else "Veri yetersiz.")
+    stop_ref = low20 if (not math.isnan(low20) and low20 > 0) else (close - 1.5 * atr14)
+    stop_level = min(stop_ref, close - 1.2 * atr14)  # biraz daha güvenli
 
-        st.markdown("**🧭 Ben olsam (örnek plan)**")
-        st.markdown("\n".join(plan))
+    if (not math.isnan(ma50)) and ma50 > 0:
+        tp1 = ma50 if ma50 > close else close * 1.06
+    else:
+        tp1 = close * 1.06
 
-        # Mini grafik (hatasız)
-        chart_df = df.tail(120).copy()
-        chart_df = chart_df.set_index("Date")
-        cols = [c for c in ["Close","MA20","MA50"] if c in chart_df.columns]
-        if len(cols) >= 1:
-            st.line_chart(chart_df[cols], height=220)
+    tp2 = hi60 if (not math.isnan(hi60) and hi60 > 0) else close * 1.12
 
-# ---------------------------
-# App
-# ---------------------------
-st.title("📋 BIST 50 Tarayıcı — Kart Kart Liste")
-st.caption("Liste her açtığında en güncel **kapanış** verisiyle yeniden hesaplanır. (Bildirim yok.)")
+    # Düzen: tp2 tp1'den küçükse düzelt
+    if tp2 <= tp1:
+        tp2 = max(tp1 * 1.03, close * 1.10)
 
-colA, colB, colC = st.columns([2,1,1])
-max_cards = colB.slider("Gösterilecek kart", 5, 30, 15)
-mode = colC.selectbox("Liste Modu", ["Ben olsam alırdım (filtreli)", "Tümü (BIST50)"])
+    # Plan cümlesi: "ben olsam alırdım" TRUE ise daha net konuş
+    plan_lines = []
+    if ben_olsam_alirdim:
+        plan_lines.append("✅ **Ben olsam bu bölgeyi 'ALIM İÇİN İZLEME/DEĞERLENDİRME' listeme koyardım.**")
+    else:
+        plan_lines.append("🟡 **Ben olsam şu an 'izlerdim' (acele etmezdim).**")
 
-# Basit isim eşlemesi (istersen sonra genişletiriz)
-NAME_MAP = {
-    "ASELS.IS": "ASELS", "THYAO.IS": "THYAO", "GARAN.IS": "GARAN", "SISE.IS": "SISE",
-    "EREGL.IS": "EREGL", "KCHOL.IS": "KCHOL", "SAHOL.IS": "SAHOL", "TUPRS.IS": "TUPRS",
-    "BIMAS.IS": "BIMAS", "FROTO.IS": "FROTO", "TTKOM.IS": "TTKOM", "TCELL.IS": "TCELL",
-}
+    plan_lines.append(f"• Referans (son kapanış): **{fmt(close,2)}**")
+    plan_lines.append(f"• Ben olsam **zarar-kes/temkin** seviyesini yaklaşık: **{fmt(stop_level,2)}** civarı takip ederdim.")
+    plan_lines.append(f"• Ben olsam **kâr alma 1** (ilk hedef): **{fmt(tp1,2)}** civarı (MA50/ilk eşik mantığı).")
+    plan_lines.append(f"• Ben olsam **kâr alma 2** (ikinci hedef): **{fmt(tp2,2)}** civarı (son 60g tepe/direnç adayı).")
+    plan_lines.append("• Kural şablonu: Fiyat hedefe yaklaşırken **hacim düşüyorsa** temkin, **hacim artıyorsa** hareket daha sağlıklı olabilir.")
 
+    return {
+        "close": close,
+        "drop120": drop120,
+        "rsi14": rsi14,
+        "vol_ratio": vr,
+        "range_pos": rp,
+        "ben_olsam_alirdim": ben_olsam_alirdim,
+        "reasons": reasons,
+        "plan": plan_lines,
+        "stop_level": stop_level,
+        "tp1": tp1,
+        "tp2": tp2
+    }
+
+@st.cache_data(ttl=60 * 60)  # 1 saat cache (çok çağrı olmasın)
+def fetch_one(ticker: str) -> pd.DataFrame:
+    raw = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False)
+    df = normalize_yf(raw)
+    return df
+
+def ticker_short(t: str) -> str:
+    return t.replace(".IS", "")
+
+# -----------------------------
+# UI Controls
+# -----------------------------
+with st.sidebar:
+    st.header("Ayarlar")
+    only_buy = st.toggle("Sadece 'Ben olsam alırdım' listesi", value=True)
+    max_cards = st.slider("Gösterilecek maksimum kart", 10, 50, 25)
+    st.divider()
+    st.caption("Not: Çok hızlı yenilersen veri sağlayıcı limitleyebilir. Cache var.")
+
+st.markdown("Aşağıdaki liste, her açılışta en güncel kapanış verileriyle yeniden hesaplanır (cache: 1 saat).")
+
+# -----------------------------
+# Scan
+# -----------------------------
 results = []
+errors = []
 
-with st.spinner("BIST50 taranıyor..."):
-    for t in BIST50:
-        try:
-            raw = load_ohlcv(t, "1y")
-            if raw.empty or len(raw) < 80:
-                continue
-            df = build_features(raw)
-            if df.empty:
-                continue
-            last = df.iloc[-1]
-            # gerekli kolonlar var mı
-            if "Close" not in df.columns:
-                continue
+progress = st.progress(0, text="BIST 50 taranıyor...")
+total = len(BIST50)
 
-            sc = score_candidate(last)
-            results.append({
-                "ticker": t,
-                "name": NAME_MAP.get(t, t.replace(".IS","")),
-                "score": sc,
-                "df": df,
-            })
-        except Exception:
-            # bir hisse patlarsa tüm app patlamasın
-            continue
+for i, ticker in enumerate(BIST50, start=1):
+    try:
+        df = fetch_one(ticker)
+        if df is None or df.empty or len(df) < 80:
+            raise ValueError("Yetersiz veri (tarihçe kısa veya boş).")
+
+        df = build_features(df)
+        df = df.dropna(subset=["MA20","MA50","RSI14","ATR14"], how="any")
+        if df.empty:
+            raise ValueError("Göstergeler hesaplanamadı (NaN).")
+
+        info = classify_and_plan(df)
+
+        results.append({
+            "ticker": ticker,
+            "name": ticker_short(ticker),
+            "close": info["close"],
+            "drop120": info["drop120"],
+            "rsi14": info["rsi14"],
+            "vol_ratio": info["vol_ratio"],
+            "range_pos": info["range_pos"],
+            "buy": info["ben_olsam_alirdim"],
+            "reasons": info["reasons"],
+            "plan": info["plan"],
+            "stop": info["stop_level"],
+            "tp1": info["tp1"],
+            "tp2": info["tp2"],
+        })
+
+    except Exception as e:
+        errors.append((ticker, str(e)))
+
+    progress.progress(i / total, text=f"Taranıyor: {i}/{total}")
+
+progress.empty()
 
 if not results:
-    st.error("Veri çekilemedi. (Yahoo kaynaklı geçici olabilir.) Biraz sonra tekrar dene.")
+    st.error("Hiç veri çekilemedi. (Bağlantı, veri sağlayıcı limiti veya ticker listesi sorunu olabilir.)")
+    if errors:
+        st.write("Hatalar:")
+        st.write(errors[:10])
     st.stop()
 
-# Sıralama
-results = sorted(results, key=lambda x: x["score"], reverse=True)
+res_df = pd.DataFrame(results)
 
-if mode.startswith("Ben olsam"):
-    # filtre (aşırı pahalı/ısınmış olanları aşağı iter)
-    filtered = []
-    for r in results:
-        df = r["df"]
-        last = df.iloc[-1]
-        pos = safe_float(last.get("RANGE_POS_1Y"))
-        rsi14 = safe_float(last.get("RSI14"))
-        # Filtre: pahalı üst bölge + aşırı RSI çok sıcak ise liste dışı
-        if (not math.isnan(pos) and pos > 75) and (not math.isnan(rsi14) and rsi14 > 70):
-            continue
-        filtered.append(r)
-    results = filtered
+# Sırala: buy=True olanlar üstte, sonra range_pos düşük, sonra drop120 yüksek
+res_df["buy_rank"] = res_df["buy"].astype(int)
+res_df = res_df.sort_values(by=["buy_rank","range_pos","drop120"], ascending=[False, True, False]).reset_index(drop=True)
 
-st.markdown("---")
+if only_buy:
+    res_df = res_df[res_df["buy"] == True].reset_index(drop=True)
 
-# Kartları bas
+st.subheader("🧾 Kart Kart Liste")
+
 shown = 0
-for r in results:
+for _, row in res_df.iterrows():
     if shown >= max_cards:
         break
-    write_card(r["ticker"], r["name"], r["df"])
-    shown += 1
 
-st.markdown("---")
-st.caption("⚠️ Bu ekran **yatırım tavsiyesi değildir**. 'Ben olsam' kısmı **örnek plan şablonu**dur; karar ve risk tamamen kullanıcıya aittir.")
+    shown += 1
+    t = row["ticker"]
+    name = row["name"]
+
+    col1, col2, col3, col4, col5 = st.columns([1.2,1,1,1,1])
+    with col1:
+        st.markdown(f"### {name}")
+        st.caption(t)
+    with col2:
+        st.metric("Kapanış", fmt(row["close"],2))
+    with col3:
+        st.metric("Zirveden düşüş (120g)", f"%{fmt(row['drop120'],0)}")
+    with col4:
+        st.metric("RSI(14)", fmt(row["rsi14"],0))
+    with col5:
+        st.metric("Hacim / 20g Ort", f"{fmt(row['vol_ratio'],2)}x")
+
+    # Durum + Plan
+    st.markdown("**🧠 Sistem Durumu (Bilgi Amaçlı)**")
+    for r in row["reasons"]:
+        st.write(f"• {r}")
+
+    st.markdown("**🧭 Ben olsam (örnek plan şablonu)**")
+    for p in row["plan"]:
+        st.write(p)
+
+    st.divider()
+
+if errors:
+    with st.expander("⚠️ Bazı hisselerde veri/hesaplama hatası oldu (gizli)"):
+        st.write(pd.DataFrame(errors, columns=["Ticker", "Hata"]).head(20))

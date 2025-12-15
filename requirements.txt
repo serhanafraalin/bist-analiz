@@ -1,4 +1,6 @@
-streamlit==1.29.0
-yfinance==0.2.36
-pandas==2.1.4
-numpy==1.26.4
+streamlit==1.28.2
+yfinance==0.2.33
+pandas==2.0.3
+numpy==1.24.4
+requests==2.31.0
+lxml==4.9.3

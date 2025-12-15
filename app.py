@@ -8,22 +8,23 @@ import yfinance as yf
 # ---------------------------------
 # App Config
 # ---------------------------------
-st.set_page_config(page_title="BIST 50 Tarayıcı", layout="wide")
-st.title("📋 BIST 50 Tarayıcı — Kart Kart Liste")
+st.set_page_config(page_title="BIST 30 Tarayıcı", layout="wide")
+st.title("📋 BIST 30 Tarayıcı — Kart Kart Liste")
 st.caption(
     "Bu sistem yatırım tavsiyesi değildir. "
     "'Ben olsam' bölümü, **örnek plan şablonu** olarak bilgi verir; karar %100 sende."
 )
 
 # ---------------------------------
-# BIST50 (yaklaşık liste)
+# BIST30 (yaklaşık liste - dönemsel değişebilir)
 # ---------------------------------
-BIST50 = [
-    "AKBNK.IS","ALARK.IS","ARCLK.IS","ASELS.IS","ASTOR.IS","BIMAS.IS","BRISA.IS","CCOLA.IS","DOAS.IS","EKGYO.IS",
-    "ENJSA.IS","ENKAI.IS","EREGL.IS","FROTO.IS","GARAN.IS","GUBRF.IS","HEKTS.IS","ISCTR.IS","KCHOL.IS","KOZAA.IS",
-    "KOZAL.IS","KRDMD.IS","MAVI.IS","ODAS.IS","OTKAR.IS","PETKM.IS","PGSUS.IS","SAHOL.IS","SASA.IS","SISE.IS",
-    "SKBNK.IS","SMRTG.IS","SOKM.IS","TCELL.IS","THYAO.IS","TKFEN.IS","TOASO.IS","TSKB.IS","TTKOM.IS","TUPRS.IS",
-    "TTRAK.IS","VAKBN.IS","VESBE.IS","VESTL.IS","YKBNK.IS","ZOREN.IS","HALKB.IS","KONTR.IS","ULKER.IS","CIMSA.IS"
+BIST30 = [
+    "AKBNK.IS", "ALARK.IS", "ASELS.IS", "BIMAS.IS", "CCOLA.IS",
+    "ENKAI.IS", "EREGL.IS", "FROTO.IS", "GARAN.IS", "ISCTR.IS",
+    "KCHOL.IS", "KOZAL.IS", "KRDMD.IS", "ODAS.IS", "OTKAR.IS",
+    "PETKM.IS", "PGSUS.IS", "SAHOL.IS", "SASA.IS", "SISE.IS",
+    "TCELL.IS", "THYAO.IS", "TKFEN.IS", "TOASO.IS", "TUPRS.IS",
+    "TTRAK.IS", "VAKBN.IS", "VESTL.IS", "YKBNK.IS", "ULKER.IS"
 ]
 
 # ---------------------------------
@@ -58,9 +59,9 @@ def normalize_yf(raw: pd.DataFrame) -> pd.DataFrame:
 
     if isinstance(df.columns, pd.MultiIndex):
         lvl0 = df.columns.get_level_values(0).astype(str)
-        if set(["Open","High","Low","Close","Adj Close","Volume"]).intersection(set(lvl0)):
+        if set(["Open", "High", "Low", "Close", "Adj Close", "Volume"]).intersection(set(lvl0)):
             out = {}
-            for c in ["Open","High","Low","Close","Adj Close","Volume"]:
+            for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
                 if c in lvl0.values:
                     sub = df.loc[:, df.columns.get_level_values(0) == c]
                     out[c] = sub.iloc[:, 0]
@@ -78,13 +79,13 @@ def normalize_yf(raw: pd.DataFrame) -> pd.DataFrame:
 
     if "Volume" not in df.columns:
         df["Volume"] = np.nan
-    for k in ["Open","High","Low"]:
+    for k in ["Open", "High", "Low"]:
         if k not in df.columns:
             df[k] = np.nan
 
-    df = df[["Open","High","Low","Close","Volume"]].copy()
+    df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
 
-    for c in ["Open","High","Low","Close","Volume"]:
+    for c in ["Open", "High", "Low", "Close", "Volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df = df.dropna(subset=["Close"])
@@ -112,9 +113,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df["Close"] = _to_series(df, "Close")
-    df["High"]  = _to_series(df, "High")
-    df["Low"]   = _to_series(df, "Low")
-    df["Volume"]= _to_series(df, "Volume")
+    df["High"] = _to_series(df, "High")
+    df["Low"] = _to_series(df, "Low")
+    df["Volume"] = _to_series(df, "Volume")
 
     df["MA20"] = df["Close"].rolling(20, min_periods=20).mean()
     df["MA50"] = df["Close"].rolling(50, min_periods=50).mean()
@@ -178,7 +179,6 @@ def classify_and_plan(df: pd.DataFrame) -> dict:
 
     if not math.isnan(ma20):
         reasons.append("Fiyat MA20 üstünde/çevresinde." if close >= ma20 else "Fiyat MA20 altında.")
-
     if not math.isnan(ma50):
         reasons.append("Fiyat MA50 üstünde (orta vade daha güçlü)." if close >= ma50 else "Fiyat MA50 altında (orta vade temkin).")
 
@@ -197,10 +197,7 @@ def classify_and_plan(df: pd.DataFrame) -> dict:
     stop_level = min(stop_candidate, close - 1.2 * atr14)
 
     target_atr1 = close + 2.0 * atr14
-    if (not math.isnan(ma50)) and ma50 > close:
-        tp1 = min(target_atr1, ma50)
-    else:
-        tp1 = target_atr1
+    tp1 = min(target_atr1, ma50) if (not math.isnan(ma50) and ma50 > close) else target_atr1
 
     tp2 = hi60 if (not math.isnan(hi60) and hi60 > 0) else (close + 3.5 * atr14)
     if tp2 <= tp1:
@@ -210,62 +207,57 @@ def classify_and_plan(df: pd.DataFrame) -> dict:
     if buy:
         plan.append("✅ **Ben olsam bu hisseyi ALIM İÇİN listeye koyardım.**")
         plan.append(
-            f"• **Ben olsam satış planı**: fiyat **{fmt(tp1,2)}** civarına gelince *kârın bir kısmını* alırdım; "
-            f"**{fmt(tp2,2)}** civarı *ikinci kâr bölgesi* diye izlerdim."
+            f"• **Ben olsam satış planı**: **{fmt(tp1,2)}** civarı kâr-1; **{fmt(tp2,2)}** civarı kâr-2 diye izlerdim."
         )
-        plan.append(f"• **Ben olsam temkin/stop**: **{fmt(stop_level,2)}** altı olursa planı bozar, temkinli olur/çıkarım derdim.")
+        plan.append(f"• **Ben olsam temkin/stop**: **{fmt(stop_level,2)}** altı olursa planı bozarım derdim.")
     else:
         plan.append("🟡 **Ben olsam şu an acele etmezdim; izleme listesine alırdım.**")
-        plan.append("• Eğer işlem düşünseydim: önce MA20/MA50 davranışını ve hacmi izlerdim.")
-        plan.append(f"• Plan şablonu: temkin **{fmt(stop_level,2)}**, hedefler **{fmt(tp1,2)}** / **{fmt(tp2,2)}** (bilgi amaçlı).")
+        plan.append("• Önce MA20/MA50 davranışı ve hacmi izlerdim.")
+        plan.append(f"• Şablon: temkin **{fmt(stop_level,2)}**, hedefler **{fmt(tp1,2)}** / **{fmt(tp2,2)}** (bilgi amaçlı).")
 
-    plan.append("• Not: Hedefe yaklaşırken **hacim artıyorsa** hareket daha sağlıklı; **hacim düşüyorsa** daha temkinli olurum.")
+    plan.append("• Not: Hedefe yaklaşırken hacim artıyorsa daha sağlıklı; düşüyorsa temkin.")
 
-    return {
-        "close": close, "drop120": drop120, "rsi14": rsi14, "vol_ratio": vr, "range_pos": rp,
-        "buy": buy, "reasons": reasons, "plan": plan,
-        "stop": stop_level, "tp1": tp1, "tp2": tp2
-    }
+    return {"close": close, "drop120": drop120, "rsi14": rsi14, "vol_ratio": vr, "range_pos": rp,
+            "buy": buy, "reasons": reasons, "plan": plan, "stop": stop_level, "tp1": tp1, "tp2": tp2}
 
-# cache
+# cache (rate limit azaltır)
 @st.cache_data(ttl=60*60)
 def fetch_one(ticker: str) -> pd.DataFrame:
     raw = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False)
     return normalize_yf(raw)
 
 # ---------------------------------
-# UI Controls (compat)
+# UI
 # ---------------------------------
 with st.sidebar:
     st.header("Ayarlar")
     only_buy = st.checkbox("Sadece 'Ben olsam alırdım' listesi", value=True)
-    max_cards = st.slider("Gösterilecek maksimum kart", 10, 50, 25)
+    max_cards = st.slider("Gösterilecek maksimum kart", 10, 30, 20)
     slow = st.checkbox("Yavaş tarama (limit riskini azaltır)", value=True)
     st.divider()
     st.caption("Not: Çok hızlı yenilersen veri sağlayıcı limitleyebilir. Cache 1 saat.")
 
-st.markdown("Aşağıdaki liste her açılışta en güncel kapanış verileriyle hesaplanır (cache: **1 saat**).")
+st.markdown("Liste her açılışta en güncel kapanış verileriyle hesaplanır (cache: **1 saat**).")
 
 # ---------------------------------
 # Scan
 # ---------------------------------
-results = []
-errors = []
+results, errors = [], []
 
 prog = st.progress(0)
 status = st.empty()
-status.info("BIST 50 taranıyor...")
+status.info("BIST 30 taranıyor...")
 
-total = len(BIST50)
+total = len(BIST30)
 
-for i, ticker in enumerate(BIST50, start=1):
+for i, ticker in enumerate(BIST30, start=1):
     try:
         df = fetch_one(ticker)
         if df.empty or len(df) < 120:
             raise ValueError("Yetersiz veri (tarihçe kısa/boş).")
 
         df = build_features(df)
-        df = df.dropna(subset=["MA20","MA50","RSI14","ATR14"], how="any")
+        df = df.dropna(subset=["MA20", "MA50", "RSI14", "ATR14"], how="any")
         if df.empty:
             raise ValueError("Göstergeler hesaplanamadı (NaN).")
 
@@ -289,7 +281,7 @@ for i, ticker in enumerate(BIST50, start=1):
     except Exception as e:
         errors.append((ticker, str(e)))
 
-    prog.progress(i/total)
+    prog.progress(i / total)
     status.info(f"Taranıyor: {i}/{total}")
 
     if slow:
@@ -299,19 +291,19 @@ prog.empty()
 status.empty()
 
 if not results:
-    st.error("Hiç veri çekilemedi. (Bağlantı / veri sağlayıcı limiti / ticker listesi sorunu olabilir.)")
+    st.error("Hiç veri çekilemedi. (Bağlantı / yfinance limiti / ticker listesi sorunu olabilir.)")
     if errors:
-        st.write(pd.DataFrame(errors, columns=["Ticker","Hata"]).head(20))
+        st.write(pd.DataFrame(errors, columns=["Ticker", "Hata"]).head(30))
     st.stop()
 
 res_df = pd.DataFrame(results)
 res_df["buy_rank"] = res_df["buy"].astype(int)
-res_df = res_df.sort_values(by=["buy_rank","range_pos","drop120"], ascending=[False, True, False]).reset_index(drop=True)
+res_df = res_df.sort_values(by=["buy_rank", "range_pos", "drop120"], ascending=[False, True, False]).reset_index(drop=True)
 
 if only_buy:
     res_df = res_df[res_df["buy"] == True].reset_index(drop=True)
 
-st.subheader("🧾 Kart Kart Liste")
+st.subheader("🧾 Kart Kart Liste (BIST 30)")
 
 shown = 0
 for _, row in res_df.iterrows():

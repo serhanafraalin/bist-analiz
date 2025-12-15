@@ -6,65 +6,60 @@ import numpy as np
 st.set_page_config(page_title="BIST Analiz", layout="wide")
 
 st.title("📊 BIST Bilgi Amaçlı Analiz Sistemi")
+st.caption("Bu sistem al/sat önerisi vermez. Sadece teknik durumu yorumlar.")
 
-st.markdown("""
-Bu sistem **al/sat önerisi vermez**.  
-Sadece teknik durumları **bilgi amaçlı** listeler.
-""")
-
-hisse = st.text_input("Hisse kodu gir (Örn: THYAO.IS)", "THYAO.IS")
+hisse = st.text_input("Hisse kodu (Örn: THYAO.IS)", "THYAO.IS")
 
 if hisse:
-    data = yf.download(hisse, period="6mo", interval="1d", auto_adjust=True)
+    df = yf.download(hisse, period="6mo", interval="1d", group_by="column")
 
-    if data.empty:
-        st.error("Veri bulunamadı.")
+    if df.empty:
+        st.error("Veri çekilemedi.")
+        st.stop()
+
+    # MultiIndex varsa düzelt
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.dropna()
+
+    # İndikatörler
+    df["EMA20"] = df["Close"].ewm(span=20).mean()
+    df["EMA50"] = df["Close"].ewm(span=50).mean()
+
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    st.subheader("📈 Fiyat & Ortalamalar")
+    st.line_chart(df[["Close", "EMA20", "EMA50"]])
+
+    st.subheader("📉 RSI")
+    st.line_chart(df["RSI"])
+
+    # ANALİZ YORUMLARI
+    st.subheader("🧠 Sistem Yorumu (Bilgi Amaçlı)")
+
+    yorumlar = []
+
+    if df["RSI"].iloc[-1] < 30:
+        yorumlar.append("• RSI 30 altı → aşırı satım, tepki ihtimali artar.")
+    elif df["RSI"].iloc[-1] > 70:
+        yorumlar.append("• RSI 70 üstü → aşırı alım, yorulma riski.")
     else:
-        data = data.reset_index()
+        yorumlar.append("• RSI dengeli bölgede.")
 
-        data["EMA20"] = data["Close"].ewm(span=20).mean()
-        data["EMA50"] = data["Close"].ewm(span=50).mean()
+    if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1]:
+        yorumlar.append("• Kısa vadeli trend yukarı (EMA20 > EMA50).")
+    else:
+        yorumlar.append("• Kısa vadeli trend zayıf / aşağı.")
 
-        delta = data["Close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        rs = gain.rolling(14).mean() / loss.rolling(14).mean()
-        data["RSI"] = 100 - (100 / (1 + rs))
+    if df["Close"].iloc[-1] > df["EMA20"].iloc[-1]:
+        yorumlar.append("• Fiyat kısa vadeli ortalamanın üzerinde.")
+    else:
+        yorumlar.append("• Fiyat kısa vadeli ortalamanın altında.")
 
-        st.subheader("📈 Fiyat & Ortalamalar")
-        st.line_chart(data.set_index("Date")[["Close", "EMA20", "EMA50"]])
-
-        st.subheader("📉 RSI")
-        st.line_chart(data.set_index("Date")["RSI"])
-
-        son_fiyat = data["Close"].iloc[-1]
-        rsi = data["RSI"].iloc[-1]
-        ema20 = data["EMA20"].iloc[-1]
-        ema50 = data["EMA50"].iloc[-1]
-
-        st.subheader("🧠 TEKNİK DURUM ÖZETİ")
-
-        analiz = []
-
-        if rsi < 30:
-            analiz.append("🔵 RSI 30 altı → Sert düşüş sonrası **tepki ihtimali**")
-        elif rsi > 70:
-            analiz.append("🔴 RSI 70 üstü → **Aşırı alım**, kâr satışı gelebilir")
-        else:
-            analiz.append("🟡 RSI dengeli bölgede")
-
-        if son_fiyat > ema20 > ema50:
-            analiz.append("🟢 Fiyat ortalamaların üstünde → **Pozitif trend**")
-        elif son_fiyat < ema20 < ema50:
-            analiz.append("🔴 Fiyat ortalamaların altında → **Negatif trend**")
-        else:
-            analiz.append("🟠 Fiyat sıkışma bölgesinde")
-
-        destek = data["Close"].rolling(20).min().iloc[-1]
-        direnç = data["Close"].rolling(20).max().iloc[-1]
-
-        analiz.append(f"📉 Yakın destek: {destek:.2f}")
-        analiz.append(f"📈 Yakın direnç: {direnç:.2f}")
-
-        for madde in analiz:
-            st.write(madde)
+    for y in yorumlar:
+        st.write(y)

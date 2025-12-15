@@ -44,26 +44,19 @@ def ticker_short(t: str) -> str:
     return t.replace(".IS", "")
 
 def _to_series(df: pd.DataFrame, col: str) -> pd.Series:
-    """Close/High/Low gibi kolonlar bazen DataFrame gibi gelebiliyor; kesin Series'e çevir."""
     x = df[col]
     if isinstance(x, pd.DataFrame):
         return x.iloc[:, 0]
     return x
 
 def normalize_yf(raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    yfinance bazen MultiIndex / garip kolon döndürür.
-    Burada OHLCV'yi tek-seviye, tekil sütunlara indiriyoruz.
-    """
     if raw is None or raw.empty:
         return pd.DataFrame()
 
     df = raw.copy()
     df.index = pd.to_datetime(df.index)
 
-    # MultiIndex kolon
     if isinstance(df.columns, pd.MultiIndex):
-        # group_by='column' gibi geldiğinde level0 OHLCV olur
         lvl0 = df.columns.get_level_values(0).astype(str)
         if set(["Open","High","Low","Close","Adj Close","Volume"]).intersection(set(lvl0)):
             out = {}
@@ -73,13 +66,10 @@ def normalize_yf(raw: pd.DataFrame) -> pd.DataFrame:
                     out[c] = sub.iloc[:, 0]
             df = pd.DataFrame(out, index=df.index)
         else:
-            # başka MultiIndex ise basitleştir
             df.columns = [str(c[0]) for c in df.columns]
 
-    # Kolon isimlerini temizle
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Close yoksa Adj Close'tan üret
     if "Close" not in df.columns:
         if "Adj Close" in df.columns:
             df["Close"] = df["Adj Close"]
@@ -94,11 +84,9 @@ def normalize_yf(raw: pd.DataFrame) -> pd.DataFrame:
 
     df = df[["Open","High","Low","Close","Volume"]].copy()
 
-    # numeric yap
     for c in ["Open","High","Low","Close","Volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Close olmayanları at
     df = df.dropna(subset=["Close"])
     df = df[~df.index.duplicated(keep="last")]
     return df
@@ -123,7 +111,6 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # kesin Series
     df["Close"] = _to_series(df, "Close")
     df["High"]  = _to_series(df, "High")
     df["Low"]   = _to_series(df, "Low")
@@ -165,20 +152,14 @@ def classify_and_plan(df: pd.DataFrame) -> dict:
 
     reasons = []
 
-    # “Ben olsam alırdım” — basit, okunabilir filtre:
-    # - 1Y aralık alt/orta-alt
-    # - RSI 30-60
-    # - MA20’ye yakın/üst
-    # - hacim en az ortalamaya yakın
     cond_range = (not math.isnan(rp)) and rp <= 45
     cond_rsi = (not math.isnan(rsi14)) and (30 <= rsi14 <= 60)
     cond_trend = (not math.isnan(ma20)) and close >= ma20 * 0.98
     cond_vol = (not math.isnan(vr)) and vr >= 0.9
     cond_drop = (not math.isnan(drop120)) and drop120 >= 10
 
-    ben_olsam_alirdim = bool((cond_range and cond_rsi and cond_trend and cond_vol) or (cond_drop and cond_rsi and cond_trend))
+    buy = bool((cond_range and cond_rsi and cond_trend and cond_vol) or (cond_drop and cond_rsi and cond_trend))
 
-    # Durum cümleleri
     if not math.isnan(rp):
         if rp <= 35:
             reasons.append(f"Fiyat 1 yıllık aralığın alt bölgesinde ({fmt(rp,0)}/100).")
@@ -209,58 +190,57 @@ def classify_and_plan(df: pd.DataFrame) -> dict:
         else:
             reasons.append(f"Hacim normal ({fmt(vr,2)}x).")
 
-    # Plan: “Ben olsam alırdım + şu fiyata gelince satardım” (net seviyeler)
     if math.isnan(atr14) or atr14 <= 0:
         atr14 = max(0.0, close * 0.02)
 
-    # stop: low20 veya close - 1.5 ATR (hangisi daha güvenliyse)
     stop_candidate = low20 if (not math.isnan(low20) and low20 > 0) else (close - 1.5 * atr14)
     stop_level = min(stop_candidate, close - 1.2 * atr14)
 
-    # hedef1: close + 2 ATR veya MA50 (hangisi daha yakın/gerçekçi ise)
     target_atr1 = close + 2.0 * atr14
     if (not math.isnan(ma50)) and ma50 > close:
         tp1 = min(target_atr1, ma50)
     else:
         tp1 = target_atr1
 
-    # hedef2: 60g tepe, yoksa close + 3.5 ATR
     tp2 = hi60 if (not math.isnan(hi60) and hi60 > 0) else (close + 3.5 * atr14)
     if tp2 <= tp1:
         tp2 = tp1 + 1.0 * atr14
 
     plan = []
-    if ben_olsam_alirdim:
+    if buy:
         plan.append("✅ **Ben olsam bu hisseyi ALIM İÇİN listeye koyardım.**")
-        plan.append(f"• **Ben olsam satış planı**: fiyat **{fmt(tp1,2)}** civarına gelince *kârın bir kısmını* alırdım; "
-                    f"**{fmt(tp2,2)}** civarı *ikinci kâr bölgesi* diye izlerdim.")
+        plan.append(
+            f"• **Ben olsam satış planı**: fiyat **{fmt(tp1,2)}** civarına gelince *kârın bir kısmını* alırdım; "
+            f"**{fmt(tp2,2)}** civarı *ikinci kâr bölgesi* diye izlerdim."
+        )
         plan.append(f"• **Ben olsam temkin/stop**: **{fmt(stop_level,2)}** altı olursa planı bozar, temkinli olur/çıkarım derdim.")
     else:
         plan.append("🟡 **Ben olsam şu an acele etmezdim; izleme listesine alırdım.**")
-        plan.append(f"• Eğer işlem düşünseydim: önce MA20/MA50 davranışını ve hacmi izlerdim.")
-        plan.append(f"• Plan şablonu yine aynı mantık: temkin **{fmt(stop_level,2)}**, hedefler **{fmt(tp1,2)}** / **{fmt(tp2,2)}** (bilgi amaçlı).")
+        plan.append("• Eğer işlem düşünseydim: önce MA20/MA50 davranışını ve hacmi izlerdim.")
+        plan.append(f"• Plan şablonu: temkin **{fmt(stop_level,2)}**, hedefler **{fmt(tp1,2)}** / **{fmt(tp2,2)}** (bilgi amaçlı).")
 
     plan.append("• Not: Hedefe yaklaşırken **hacim artıyorsa** hareket daha sağlıklı; **hacim düşüyorsa** daha temkinli olurum.")
 
     return {
         "close": close, "drop120": drop120, "rsi14": rsi14, "vol_ratio": vr, "range_pos": rp,
-        "buy": ben_olsam_alirdim, "reasons": reasons, "plan": plan,
+        "buy": buy, "reasons": reasons, "plan": plan,
         "stop": stop_level, "tp1": tp1, "tp2": tp2
     }
 
+# cache
 @st.cache_data(ttl=60*60)
 def fetch_one(ticker: str) -> pd.DataFrame:
     raw = yf.download(ticker, period="1y", interval="1d", auto_adjust=False, progress=False)
     return normalize_yf(raw)
 
 # ---------------------------------
-# UI Controls
+# UI Controls (compat)
 # ---------------------------------
 with st.sidebar:
     st.header("Ayarlar")
-    only_buy = st.toggle("Sadece 'Ben olsam alırdım' listesi", value=True)
+    only_buy = st.checkbox("Sadece 'Ben olsam alırdım' listesi", value=True)
     max_cards = st.slider("Gösterilecek maksimum kart", 10, 50, 25)
-    slow = st.toggle("Yavaş tarama (limit riskini azaltır)", value=True)
+    slow = st.checkbox("Yavaş tarama (limit riskini azaltır)", value=True)
     st.divider()
     st.caption("Not: Çok hızlı yenilersen veri sağlayıcı limitleyebilir. Cache 1 saat.")
 
@@ -272,7 +252,10 @@ st.markdown("Aşağıdaki liste her açılışta en güncel kapanış verileriyl
 results = []
 errors = []
 
-prog = st.progress(0, text="BIST 50 taranıyor...")
+prog = st.progress(0)
+status = st.empty()
+status.info("BIST 50 taranıyor...")
+
 total = len(BIST50)
 
 for i, ticker in enumerate(BIST50, start=1):
@@ -282,7 +265,6 @@ for i, ticker in enumerate(BIST50, start=1):
             raise ValueError("Yetersiz veri (tarihçe kısa/boş).")
 
         df = build_features(df)
-        # göstergeler oluşsun diye MA50/RSI/ATR olmayanları at
         df = df.dropna(subset=["MA20","MA50","RSI14","ATR14"], how="any")
         if df.empty:
             raise ValueError("Göstergeler hesaplanamadı (NaN).")
@@ -307,12 +289,14 @@ for i, ticker in enumerate(BIST50, start=1):
     except Exception as e:
         errors.append((ticker, str(e)))
 
-    prog.progress(i/total, text=f"Taranıyor: {i}/{total}")
+    prog.progress(i/total)
+    status.info(f"Taranıyor: {i}/{total}")
 
     if slow:
         time.sleep(0.25)
 
 prog.empty()
+status.empty()
 
 if not results:
     st.error("Hiç veri çekilemedi. (Bağlantı / veri sağlayıcı limiti / ticker listesi sorunu olabilir.)")
@@ -322,8 +306,6 @@ if not results:
 
 res_df = pd.DataFrame(results)
 res_df["buy_rank"] = res_df["buy"].astype(int)
-
-# buy olanlar üstte; sonra range_pos düşük; sonra drop yüksek
 res_df = res_df.sort_values(by=["buy_rank","range_pos","drop120"], ascending=[False, True, False]).reset_index(drop=True)
 
 if only_buy:
@@ -354,7 +336,9 @@ for _, row in res_df.iterrows():
     for p in row["plan"]:
         st.write(p)
 
-    st.caption(f"Plan seviyeleri (bilgi): stop≈ {fmt(row['stop'],2)} | hedef1≈ {fmt(row['tp1'],2)} | hedef2≈ {fmt(row['tp2'],2)}")
+    st.caption(
+        f"Plan seviyeleri (bilgi): stop≈ {fmt(row['stop'],2)} | hedef1≈ {fmt(row['tp1'],2)} | hedef2≈ {fmt(row['tp2'],2)}"
+    )
     st.divider()
 
 if errors:
